@@ -8,7 +8,7 @@ MOONRAKER_URL = "http://192.168.101.8:7125"
 
 response = requests.post(
     f"{MOONRAKER_URL}/printer/gcode/script",
-    json={"script": "G28 X"}  # just the G-code itself
+    json={"script": "G28"}  # just the G-code itself
 )
 
 # response = requests.post(

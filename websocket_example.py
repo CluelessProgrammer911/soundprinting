@@ -1,3 +1,4 @@
+# MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
 import asyncio
 import json
 import websockets
@@ -18,7 +19,7 @@ async def main():
         await ws.send(json.dumps({
             "jsonrpc": "2.0",
             "method": "printer.gcode.script",
-            "params": {"script": "G91\nG1 X20 F1000\nG90"},
+            "params": {"script": "G1 X40 F1000"},
             "id": 2
         }))
 
