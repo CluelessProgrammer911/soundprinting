@@ -2,6 +2,7 @@ import logging
 
 # Centralized motion presets: (step_distance, speed)
 MOTION_SETTINGS_XY = {
+    0: (0.0, 0.0),
     1: (0.45, 10.0),
     2: (0.80, 20.0),
     3: (1.05, 30.0),
@@ -10,7 +11,8 @@ MOTION_SETTINGS_XY = {
 }
 
 MOTION_SETTINGS_Z = {
-    1: (0.23, 0.5),
+    0: (0.0, 0.0),
+    1: (0.023, 0.5),
     2: (0.04, 1),
     3: (0.053, 1.5),
     4: (0.06, 2),
@@ -34,7 +36,7 @@ class AxisConfig:
         if preset is None:
             return False
         step, speed = preset
-        if step <= 0 or speed <= 0:
+        if step < 0 or speed < 0:  # Allow 0 for stationary axes
             logging.warning("Invalid %s preset values: step=%s speed=%s", self.name, step, speed)
             return False
         self.step_distance, self.speed = step, speed
@@ -48,6 +50,10 @@ class AxisConfig:
 
     def compute_next_position(self, current_pos):
         """Compute next position and update direction if bounds are hit."""
+        # If step_distance is 0, axis is stationary
+        if self.step_distance == 0:
+            return current_pos
+        
         next_pos = current_pos + (self.step_distance * self.direction)
         
         # Clamp to bounds and reverse direction if needed
@@ -107,7 +113,7 @@ class LoopMoveX:
         for axis_name, axis in self.axes.items():
             val = gcmd.get_int(axis_name, None)
             if not axis.apply_preset(val):
-                gcmd.respond_info(f"Invalid {axis_name} value. Use {axis_name}=1..5.")
+                gcmd.respond_info(f"Invalid {axis_name} value. Use {axis_name}=0..5.")
                 return
 
         self.origin_pos = self.toolhead.get_position()
@@ -138,7 +144,7 @@ class LoopMoveX:
         for axis_name, axis in self.axes.items():
             val = gcmd.get_int(axis_name, None)
             if val is not None and not axis.apply_preset(val):
-                gcmd.respond_info(f"Invalid {axis_name} value. Use {axis_name}=1..5.")
+                gcmd.respond_info(f"Invalid {axis_name} value. Use {axis_name}=0..5.")
                 return
 
         # Continue from current actual position
@@ -157,7 +163,9 @@ class LoopMoveX:
             new_pos[axis.index] = axis.compute_next_position(self.current_pos[axis.index])
 
         # Use the maximum speed across all axes to ensure coordinated motion
-        move_speed = max(axis.speed for axis in self.axes.values())
+        # Filter out stationary axes (speed=0) when calculating move speed
+        active_speeds = [axis.speed for axis in self.axes.values() if axis.speed > 0]
+        move_speed = max(active_speeds) if active_speeds else 1.0  # Default to 1.0 if all stationary
 
         drip_completion = self.reactor.completion()
 
