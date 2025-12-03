@@ -37,6 +37,16 @@ MOTION_SETTINGS_Z = {
     5: (0.25, 5)
 }
 
+# Fan speed presets: level -> speed (0.0-1.0)
+FAN_SPEED_PRESETS = {
+    0: 0.0,
+    1: 0.2,
+    2: 0.4,
+    3: 0.6,
+    4: 0.8,
+    5: 1.0
+}
+
 class AxisConfig:
     """Configuration for a single axis."""
     def __init__(self, index, name, domain, settings_dict, default_step=1.25, default_speed=50.0):
@@ -113,6 +123,11 @@ class LoopMoveX:
                                desc="Stop continuous X-Y-Z axis drip motion")
         gcode.register_command('CHANGE_MOTION', self.cmd_CHANGE_MOTION,
                                desc="Change motion parameters during loop")
+        gcode.register_command('TUNE_FAN', self.cmd_TUNE_FAN,
+                               desc="Set fan speed using presets (S=0..5)")
+        # Replace TUNE_HOTEND_FAN with TOGGLE_HOTEND_FAN
+        gcode.register_command('TOGGLE_HOTEND_FAN', self.cmd_TOGGLE_HOTEND_FAN,
+                               desc="Toggle hotend heater fan on/off")
 
         self.printer.register_event_handler("klippy:ready", self._on_ready)
 
@@ -169,6 +184,55 @@ class LoopMoveX:
         self.current_pos = list(self.toolhead.get_position())
         info_strings = [axis.get_info_string() for axis in self.axes.values()]
         gcmd.respond_info(f"Motion changed: {', '.join(info_strings)} (continuing from current position)")
+
+    def cmd_TUNE_FAN(self, gcmd):
+        level = gcmd.get_int('S', None)
+        
+        # Validate level
+        if level not in FAN_SPEED_PRESETS:
+            gcmd.respond_info("Invalid S value. Use S=0..5.")
+            return
+        
+        speed = FAN_SPEED_PRESETS[level]
+        logging.info(f"Setting fan speed to level {level} ({speed}) (async)")
+        
+        # Get fan object and set speed instantly using async request
+        try:
+            fan = self.printer.lookup_object('fan')
+            fan.fan.gcrq.send_async_request(speed)
+            gcmd.respond_info(f"Fan speed set to level {level} ({speed})")
+        except Exception as e:
+            gcmd.respond_info(f"Error setting fan speed: {e}")
+            logging.exception("Error in TUNE_FAN command")
+
+    def cmd_TOGGLE_HOTEND_FAN(self, gcmd):
+        """Toggle hotend heater fan via [heater_fan hotend_fan] without modifying heater_fan.py."""
+        try:
+            hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
+
+            # Cache original heater_temp once for a future "restore to auto" if desired
+            if not hasattr(hotend_fan, '_orig_heater_temp'):
+                hotend_fan._orig_heater_temp = float(getattr(hotend_fan, 'heater_temp', 50.0))
+
+            current_speed = float(getattr(hotend_fan, 'last_speed', 0.0))
+            default_on_speed = float(getattr(hotend_fan, 'fan_speed', 1.0))
+
+            if current_speed > 0.0:
+                # Currently ON -> force OFF: make heater_temp huge so callback evaluates to 0.0
+                hotend_fan.heater_temp = 999999.0
+                hotend_fan.last_speed = 0.0
+                hotend_fan.fan.set_speed(0.0)
+                gcmd.respond_info("Hotend fan toggled to OFF (0.0)")
+            else:
+                # Currently OFF -> force ON: make heater_temp very low so callback picks fan_speed
+                hotend_fan.heater_temp = -999999.0
+                hotend_fan.last_speed = default_on_speed
+                hotend_fan.fan.set_speed(default_on_speed)
+                gcmd.respond_info(f"Hotend fan toggled to ON ({default_on_speed})")
+
+        except Exception as e:
+            logging.exception("Error toggling hotend heater fan")
+            gcmd.respond_info(f"Error toggling hotend fan: {e}")
 
     def _schedule_next_move(self, eventtime=None):
         """Schedule next drip move. Accepts eventtime for reactor callback compatibility."""
