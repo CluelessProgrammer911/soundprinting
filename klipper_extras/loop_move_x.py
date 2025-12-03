@@ -37,7 +37,7 @@ class LoopMoveX:
         self.direction_y = 1
         self.step_distance_y = 1.25
         self.speed_y = 50.0
-        self.min_y = -7.0
+        self.min_y = -8.0
         self.max_y = 234.0
 
         # Z-axis parameters
