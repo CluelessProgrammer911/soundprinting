@@ -282,6 +282,30 @@ class LoopMoveX:
             self.reactor.unregister_timer(self.fan_play_timer)
             self.fan_play_timer = None
 
+        # Check minimum time constraints and set fan accordingly
+        if on_time_ms < 50:
+            # U < 50ms: set fan to S=0 (off)
+            try:
+                fan = self.printer.lookup_object('fan')
+                fan.fan.gcrq.send_async_request(0.0)
+                gcmd.respond_info("U below 50ms: fan set to OFF (no cycling)")
+            except Exception as e:
+                gcmd.respond_info(f"Error setting fan speed: {e}")
+                logging.exception("Error in PLAY_FAN")
+            return
+
+        if off_time_ms < 50:
+            # D < 50ms: set fan to specified speed level (always on)
+            speed = FAN_SPEED_PRESETS[speed_level]
+            try:
+                fan = self.printer.lookup_object('fan')
+                fan.fan.gcrq.send_async_request(speed)
+                gcmd.respond_info(f"D below 50ms: fan set to level {speed_level} ({speed}) (no cycling)")
+            except Exception as e:
+                gcmd.respond_info(f"Error setting fan speed: {e}")
+                logging.exception("Error in PLAY_FAN")
+            return
+
         # If S=0, turn off fan and don't cycle
         if speed_level == 0:
             try:
@@ -345,6 +369,34 @@ class LoopMoveX:
         if self.hotend_fan_play_timer is not None:
             self.reactor.unregister_timer(self.hotend_fan_play_timer)
             self.hotend_fan_play_timer = None
+
+        # Check minimum time constraints and set fan accordingly
+        if on_time_ms < 50:
+            # U < 50ms: turn fan OFF
+            try:
+                hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
+                hotend_fan.heater_temp = 999999.0
+                hotend_fan.last_speed = 0.0
+                hotend_fan.fan.set_speed(0.0)
+                gcmd.respond_info("U below 50ms: hotend fan set to OFF (no cycling)")
+            except Exception as e:
+                gcmd.respond_info(f"Error setting hotend fan: {e}")
+                logging.exception("Error in PLAY_HOTEND_FAN")
+            return
+
+        if off_time_ms < 50:
+            # D < 50ms: turn fan ON (full speed)
+            try:
+                hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
+                hotend_fan.heater_temp = -999999.0
+                default_on_speed = float(getattr(hotend_fan, 'fan_speed', 1.0))
+                hotend_fan.last_speed = default_on_speed
+                hotend_fan.fan.set_speed(default_on_speed)
+                gcmd.respond_info("D below 50ms: hotend fan set to ON (no cycling)")
+            except Exception as e:
+                gcmd.respond_info(f"Error setting hotend fan: {e}")
+                logging.exception("Error in PLAY_HOTEND_FAN")
+            return
 
         # Store settings
         self.hotend_fan_play_on_time = on_time_ms / 1000.0  # Convert to seconds
