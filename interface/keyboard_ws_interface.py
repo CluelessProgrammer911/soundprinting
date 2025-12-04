@@ -8,6 +8,8 @@ import websockets
 
 MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
 
+# MOONRAKER_WS = "ws://145.116.44.125:7125/websocket" #iotroam -- ip: pi@ender hostname -I 
+
 listen_mode = False
 ws_connection = None
 
