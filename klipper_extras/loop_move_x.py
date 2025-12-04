@@ -108,6 +108,13 @@ class LoopMoveX:
         self.origin_pos = None
         self.current_pos = None
         
+        # Fan play state
+        self.fan_play_timer = None
+        self.fan_play_speed = 0.0
+        self.fan_play_on_time = 0
+        self.fan_play_off_time = 0
+        self.fan_play_is_on = False
+        
         # Configure axes
         self.axes = {
             'X': AxisConfig(0, 'X', (-10.0, 234.0), MOTION_SETTINGS_XY, 1.25, 50.0),
@@ -125,9 +132,10 @@ class LoopMoveX:
                                desc="Change motion parameters during loop")
         gcode.register_command('TUNE_FAN', self.cmd_TUNE_FAN,
                                desc="Set fan speed using presets (S=0..5)")
-        # Replace TUNE_HOTEND_FAN with TOGGLE_HOTEND_FAN
         gcode.register_command('TOGGLE_HOTEND_FAN', self.cmd_TOGGLE_HOTEND_FAN,
                                desc="Toggle hotend heater fan on/off")
+        gcode.register_command('PLAY_FAN', self.cmd_PLAY_FAN,
+                               desc="Cycle fan on/off: S=speed(0-5) U=on_ms D=off_ms")
 
         self.printer.register_event_handler("klippy:ready", self._on_ready)
 
@@ -233,6 +241,63 @@ class LoopMoveX:
         except Exception as e:
             logging.exception("Error toggling hotend heater fan")
             gcmd.respond_info(f"Error toggling hotend fan: {e}")
+
+    def cmd_PLAY_FAN(self, gcmd):
+        """Cycle fan on/off at specified speed and timing."""
+        speed_level = gcmd.get_int('S', None)
+        on_time_ms = gcmd.get_int('U', None)
+        off_time_ms = gcmd.get_int('D', None)
+
+        # Validate parameters
+        if speed_level not in FAN_SPEED_PRESETS:
+            gcmd.respond_info("Invalid S value. Use S=0..5.")
+            return
+        if on_time_ms is None or on_time_ms < 0:
+            gcmd.respond_info("Invalid U value. Must be non-negative milliseconds.")
+            return
+        if off_time_ms is None or off_time_ms < 0:
+            gcmd.respond_info("Invalid D value. Must be non-negative milliseconds.")
+            return
+
+        # Stop any existing fan play cycle
+        if self.fan_play_timer is not None:
+            self.reactor.unregister_timer(self.fan_play_timer)
+            self.fan_play_timer = None
+
+        # Store settings
+        self.fan_play_speed = FAN_SPEED_PRESETS[speed_level]
+        self.fan_play_on_time = on_time_ms / 1000.0  # Convert to seconds
+        self.fan_play_off_time = off_time_ms / 1000.0
+        self.fan_play_is_on = False
+
+        # Start the cycle
+        eventtime = self.reactor.monotonic()
+        self.fan_play_timer = self.reactor.register_timer(self._fan_play_callback, eventtime)
+        gcmd.respond_info(f"Fan play started: S={speed_level} ({self.fan_play_speed}) U={on_time_ms}ms D={off_time_ms}ms")
+
+    def _fan_play_callback(self, eventtime):
+        """Callback to toggle fan on/off in the play cycle."""
+        if self.fan_play_timer is None:
+            return self.reactor.NEVER
+
+        try:
+            fan = self.printer.lookup_object('fan')
+            
+            if self.fan_play_is_on:
+                # Currently ON -> turn OFF
+                fan.fan.gcrq.send_async_request(0.0)
+                self.fan_play_is_on = False
+                next_time = eventtime + self.fan_play_off_time
+            else:
+                # Currently OFF -> turn ON
+                fan.fan.gcrq.send_async_request(self.fan_play_speed)
+                self.fan_play_is_on = True
+                next_time = eventtime + self.fan_play_on_time
+
+            return next_time
+        except Exception:
+            logging.exception("Error in fan play callback")
+            return self.reactor.NEVER
 
     def _schedule_next_move(self, eventtime=None):
         """Schedule next drip move. Accepts eventtime for reactor callback compatibility."""
