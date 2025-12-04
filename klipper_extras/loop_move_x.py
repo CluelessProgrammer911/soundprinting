@@ -47,6 +47,8 @@ FAN_SPEED_PRESETS = {
     5: 1.0
 }
 
+MIN_CYCLE_TIME_MS = 50  # Minimum time for fan cycling to avoid system issues
+
 class AxisConfig:
     """Configuration for a single axis."""
     def __init__(self, index, name, domain, settings_dict, default_step=1.25, default_speed=50.0):
@@ -99,6 +101,125 @@ class AxisConfig:
         return f"{self.name}[step={self.step_distance}mm, speed={self.speed}mm/s, bounds={self.domain}]"
 
 
+class FanController:
+    """Helper class to manage fan control operations."""
+    
+    @staticmethod
+    def set_part_cooling_fan(printer, speed):
+        """Set part cooling fan speed using async request."""
+        fan = printer.lookup_object('fan')
+        fan.fan.gcrq.send_async_request(speed)
+    
+    @staticmethod
+    def set_hotend_fan_state(printer, turn_on):
+        """Set hotend heater fan on or off by manipulating heater_temp."""
+        hotend_fan = printer.lookup_object('heater_fan hotend_fan')
+        
+        # Cache original heater_temp on first use
+        if not hasattr(hotend_fan, '_orig_heater_temp'):
+            hotend_fan._orig_heater_temp = float(getattr(hotend_fan, 'heater_temp', 50.0))
+        
+        default_on_speed = float(getattr(hotend_fan, 'fan_speed', 1.0))
+        
+        if turn_on:
+            # Force ON: make heater_temp very low
+            hotend_fan.heater_temp = -999999.0
+            hotend_fan.last_speed = default_on_speed
+            hotend_fan.fan.set_speed(default_on_speed)
+        else:
+            # Force OFF: make heater_temp huge
+            hotend_fan.heater_temp = 999999.0
+            hotend_fan.last_speed = 0.0
+            hotend_fan.fan.set_speed(0.0)
+    
+    @staticmethod
+    def get_hotend_fan_state(printer):
+        """Get current hotend fan state (True if on, False if off)."""
+        hotend_fan = printer.lookup_object('heater_fan hotend_fan')
+        current_speed = float(getattr(hotend_fan, 'last_speed', 0.0))
+        return current_speed > 0.0
+
+class FanPlayController:
+    """Base class for fan play (cycling) functionality."""
+    
+    def __init__(self, reactor):
+        self.reactor = reactor
+        self.timer = None
+        self.on_time = 0.0
+        self.off_time = 0.0
+        self.is_on = False
+    
+    def stop(self):
+        """Stop the cycling timer."""
+        if self.timer is not None:
+            self.reactor.unregister_timer(self.timer)
+            self.timer = None
+    
+    def start(self, on_time_ms, off_time_ms):
+        """Start cycling with specified on/off times."""
+        self.on_time = on_time_ms / 1000.0
+        self.off_time = off_time_ms / 1000.0
+        self.is_on = False
+        
+        eventtime = self.reactor.monotonic()
+        self.timer = self.reactor.register_timer(self._callback, eventtime)
+    
+    def _callback(self, eventtime):
+        """Timer callback - must be overridden by subclass."""
+        raise NotImplementedError
+    
+    def _cycle(self, eventtime, turn_on_func, turn_off_func):
+        """Common cycling logic."""
+        if self.timer is None:
+            return self.reactor.NEVER
+        
+        try:
+            if self.is_on:
+                turn_off_func()
+                self.is_on = False
+                return eventtime + self.off_time
+            else:
+                turn_on_func()
+                self.is_on = True
+                return eventtime + self.on_time
+        except Exception:
+            logging.exception("Error in fan play callback")
+            return self.reactor.NEVER
+
+class PartCoolingFanPlay(FanPlayController):
+    """Manages part cooling fan cycling."""
+    
+    def __init__(self, printer):
+        super().__init__(printer.get_reactor())
+        self.printer = printer
+        self.speed = 0.0
+    
+    def start(self, on_time_ms, off_time_ms, speed):
+        """Start cycling with specified speed."""
+        self.speed = speed
+        super().start(on_time_ms, off_time_ms)
+    
+    def _callback(self, eventtime):
+        return self._cycle(
+            eventtime,
+            lambda: FanController.set_part_cooling_fan(self.printer, self.speed),
+            lambda: FanController.set_part_cooling_fan(self.printer, 0.0)
+        )
+
+class HotendFanPlay(FanPlayController):
+    """Manages hotend fan cycling."""
+    
+    def __init__(self, printer):
+        super().__init__(printer.get_reactor())
+        self.printer = printer
+    
+    def _callback(self, eventtime):
+        return self._cycle(
+            eventtime,
+            lambda: FanController.set_hotend_fan_state(self.printer, True),
+            lambda: FanController.set_hotend_fan_state(self.printer, False)
+        )
+
 class LoopMoveX:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -108,18 +229,9 @@ class LoopMoveX:
         self.origin_pos = None
         self.current_pos = None
         
-        # Fan play state
-        self.fan_play_timer = None
-        self.fan_play_speed = 0.0
-        self.fan_play_on_time = 0
-        self.fan_play_off_time = 0
-        self.fan_play_is_on = False
-        
-        # Hotend fan play state
-        self.hotend_fan_play_timer = None
-        self.hotend_fan_play_on_time = 0
-        self.hotend_fan_play_off_time = 0
-        self.hotend_fan_play_is_on = False
+        # Fan play controllers
+        self.part_fan_play = PartCoolingFanPlay(self.printer)
+        self.hotend_fan_play = HotendFanPlay(self.printer)
         
         # Configure axes
         self.axes = {
@@ -129,23 +241,23 @@ class LoopMoveX:
         }
 
         # Register G-code commands
-        gcode = self.printer.lookup_object('gcode')
-        gcode.register_command('START_MOTION', self.cmd_START_MOTION,
-                               desc="Start continuous X-Y-Z axis drip motion between bounds")
-        gcode.register_command('STOP_MOTION', self.cmd_STOP_MOTION,
-                               desc="Stop continuous X-Y-Z axis drip motion")
-        gcode.register_command('CHANGE_MOTION', self.cmd_CHANGE_MOTION,
-                               desc="Change motion parameters during loop")
-        gcode.register_command('TUNE_FAN', self.cmd_TUNE_FAN,
-                               desc="Set fan speed using presets (S=0..5)")
-        gcode.register_command('TOGGLE_HOTEND_FAN', self.cmd_TOGGLE_HOTEND_FAN,
-                               desc="Toggle hotend heater fan on/off")
-        gcode.register_command('PLAY_FAN', self.cmd_PLAY_FAN,
-                               desc="Cycle fan on/off: S=speed(0-5) U=on_ms D=off_ms")
-        gcode.register_command('PLAY_HOTEND_FAN', self.cmd_PLAY_HOTEND_FAN,
-                               desc="Cycle hotend fan on/off: U=on_ms D=off_ms")
-
+        self._register_commands()
         self.printer.register_event_handler("klippy:ready", self._on_ready)
+
+    def _register_commands(self):
+        """Register all G-code commands."""
+        gcode = self.printer.lookup_object('gcode')
+        commands = {
+            'START_MOTION': (self.cmd_START_MOTION, "Start continuous X-Y-Z axis drip motion between bounds"),
+            'STOP_MOTION': (self.cmd_STOP_MOTION, "Stop continuous X-Y-Z axis drip motion"),
+            'CHANGE_MOTION': (self.cmd_CHANGE_MOTION, "Change motion parameters during loop"),
+            'TUNE_FAN': (self.cmd_TUNE_FAN, "Set fan speed using presets (S=0..5)"),
+            'TOGGLE_HOTEND_FAN': (self.cmd_TOGGLE_HOTEND_FAN, "Toggle hotend heater fan on/off"),
+            'PLAY_FAN': (self.cmd_PLAY_FAN, "Cycle fan on/off: S=speed(0-5) U=on_ms D=off_ms"),
+            'PLAY_HOTEND_FAN': (self.cmd_PLAY_HOTEND_FAN, "Cycle hotend fan on/off: U=on_ms D=off_ms")
+        }
+        for cmd_name, (cmd_func, desc) in commands.items():
+            gcode.register_command(cmd_name, cmd_func, desc=desc)
 
     def _on_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -202,9 +314,9 @@ class LoopMoveX:
         gcmd.respond_info(f"Motion changed: {', '.join(info_strings)} (continuing from current position)")
 
     def cmd_TUNE_FAN(self, gcmd):
+        """Set part cooling fan to a specific speed level."""
         level = gcmd.get_int('S', None)
         
-        # Validate level
         if level not in FAN_SPEED_PRESETS:
             gcmd.respond_info("Invalid S value. Use S=0..5.")
             return
@@ -212,56 +324,32 @@ class LoopMoveX:
         speed = FAN_SPEED_PRESETS[level]
         logging.info(f"Setting fan speed to level {level} ({speed}) (async)")
         
-        # Stop any active PLAY_FAN loop
-        if self.fan_play_timer is not None:
-            self.reactor.unregister_timer(self.fan_play_timer)
-            self.fan_play_timer = None
+        self.part_fan_play.stop()
         
-        # Get fan object and set speed instantly using async request
         try:
-            fan = self.printer.lookup_object('fan')
-            fan.fan.gcrq.send_async_request(speed)
+            FanController.set_part_cooling_fan(self.printer, speed)
             gcmd.respond_info(f"Fan speed set to level {level} ({speed})")
         except Exception as e:
             gcmd.respond_info(f"Error setting fan speed: {e}")
             logging.exception("Error in TUNE_FAN command")
 
     def cmd_TOGGLE_HOTEND_FAN(self, gcmd):
-        """Toggle hotend heater fan via [heater_fan hotend_fan] without modifying heater_fan.py."""
-        # Stop any active PLAY_HOTEND_FAN loop
-        if self.hotend_fan_play_timer is not None:
-            self.reactor.unregister_timer(self.hotend_fan_play_timer)
-            self.hotend_fan_play_timer = None
+        """Toggle hotend heater fan on/off."""
+        self.hotend_fan_play.stop()
         
         try:
-            hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
-
-            # Cache original heater_temp once for a future "restore to auto" if desired
-            if not hasattr(hotend_fan, '_orig_heater_temp'):
-                hotend_fan._orig_heater_temp = float(getattr(hotend_fan, 'heater_temp', 50.0))
-
-            current_speed = float(getattr(hotend_fan, 'last_speed', 0.0))
-            default_on_speed = float(getattr(hotend_fan, 'fan_speed', 1.0))
-
-            if current_speed > 0.0:
-                # Currently ON -> force OFF: make heater_temp huge so callback evaluates to 0.0
-                hotend_fan.heater_temp = 999999.0
-                hotend_fan.last_speed = 0.0
-                hotend_fan.fan.set_speed(0.0)
-                gcmd.respond_info("Hotend fan toggled to OFF (0.0)")
-            else:
-                # Currently OFF -> force ON: make heater_temp very low so callback picks fan_speed
-                hotend_fan.heater_temp = -999999.0
-                hotend_fan.last_speed = default_on_speed
-                hotend_fan.fan.set_speed(default_on_speed)
-                gcmd.respond_info(f"Hotend fan toggled to ON ({default_on_speed})")
-
+            current_state = FanController.get_hotend_fan_state(self.printer)
+            new_state = not current_state
+            FanController.set_hotend_fan_state(self.printer, new_state)
+            
+            state_msg = "ON" if new_state else "OFF"
+            gcmd.respond_info(f"Hotend fan toggled to {state_msg}")
         except Exception as e:
             logging.exception("Error toggling hotend heater fan")
             gcmd.respond_info(f"Error toggling hotend fan: {e}")
 
     def cmd_PLAY_FAN(self, gcmd):
-        """Cycle fan on/off at specified speed and timing."""
+        """Cycle part cooling fan on/off at specified speed and timing."""
         speed_level = gcmd.get_int('S', None)
         on_time_ms = gcmd.get_int('U', None)
         off_time_ms = gcmd.get_int('D', None)
@@ -277,80 +365,29 @@ class LoopMoveX:
             gcmd.respond_info("Invalid D value. Must be non-negative milliseconds.")
             return
 
-        # Stop any existing fan play cycle
-        if self.fan_play_timer is not None:
-            self.reactor.unregister_timer(self.fan_play_timer)
-            self.fan_play_timer = None
+        self.part_fan_play.stop()
 
-        # Check minimum time constraints and set fan accordingly
-        if on_time_ms < 50:
-            # U < 50ms: set fan to S=0 (off)
-            try:
-                fan = self.printer.lookup_object('fan')
-                fan.fan.gcrq.send_async_request(0.0)
-                gcmd.respond_info("U below 50ms: fan set to OFF (no cycling)")
-            except Exception as e:
-                gcmd.respond_info(f"Error setting fan speed: {e}")
-                logging.exception("Error in PLAY_FAN")
+        # Handle edge cases for minimum cycle times
+        if on_time_ms < MIN_CYCLE_TIME_MS:
+            FanController.set_part_cooling_fan(self.printer, 0.0)
+            gcmd.respond_info("U below 50ms: fan set to OFF (no cycling)")
             return
 
-        if off_time_ms < 50:
-            # D < 50ms: set fan to specified speed level (always on)
+        if off_time_ms < MIN_CYCLE_TIME_MS:
             speed = FAN_SPEED_PRESETS[speed_level]
-            try:
-                fan = self.printer.lookup_object('fan')
-                fan.fan.gcrq.send_async_request(speed)
-                gcmd.respond_info(f"D below 50ms: fan set to level {speed_level} ({speed}) (no cycling)")
-            except Exception as e:
-                gcmd.respond_info(f"Error setting fan speed: {e}")
-                logging.exception("Error in PLAY_FAN")
+            FanController.set_part_cooling_fan(self.printer, speed)
+            gcmd.respond_info(f"D below 50ms: fan set to level {speed_level} ({speed}) (no cycling)")
             return
 
-        # If S=0, turn off fan and don't cycle
         if speed_level == 0:
-            try:
-                fan = self.printer.lookup_object('fan')
-                fan.fan.gcrq.send_async_request(0.0)
-                gcmd.respond_info("Fan play S=0: fan turned OFF (no cycling)")
-            except Exception as e:
-                gcmd.respond_info(f"Error turning off fan: {e}")
-                logging.exception("Error in PLAY_FAN S=0")
+            FanController.set_part_cooling_fan(self.printer, 0.0)
+            gcmd.respond_info("Fan play S=0: fan turned OFF (no cycling)")
             return
 
-        # Store settings
-        self.fan_play_speed = FAN_SPEED_PRESETS[speed_level]
-        self.fan_play_on_time = on_time_ms / 1000.0  # Convert to seconds
-        self.fan_play_off_time = off_time_ms / 1000.0
-        self.fan_play_is_on = False
-
-        # Start the cycle
-        eventtime = self.reactor.monotonic()
-        self.fan_play_timer = self.reactor.register_timer(self._fan_play_callback, eventtime)
-        gcmd.respond_info(f"Fan play started: S={speed_level} ({self.fan_play_speed}) U={on_time_ms}ms D={off_time_ms}ms")
-
-    def _fan_play_callback(self, eventtime):
-        """Callback to toggle fan on/off in the play cycle."""
-        if self.fan_play_timer is None:
-            return self.reactor.NEVER
-
-        try:
-            fan = self.printer.lookup_object('fan')
-            
-            if self.fan_play_is_on:
-                # Currently ON -> turn OFF
-                fan.fan.gcrq.send_async_request(0.0)
-                self.fan_play_is_on = False
-                next_time = eventtime + self.fan_play_off_time
-            else:
-                # Currently OFF -> turn ON
-                fan.fan.gcrq.send_async_request(self.fan_play_speed)
-                self.fan_play_is_on = True
-                next_time = eventtime + self.fan_play_on_time
-
-            return next_time
-        except Exception:
-            logging.exception("Error in fan play callback")
-            return self.reactor.NEVER
+        # Start cycling
+        speed = FAN_SPEED_PRESETS[speed_level]
+        self.part_fan_play.start(on_time_ms, off_time_ms, speed)
+        gcmd.respond_info(f"Fan play started: S={speed_level} ({speed}) U={on_time_ms}ms D={off_time_ms}ms")
 
     def cmd_PLAY_HOTEND_FAN(self, gcmd):
         """Cycle hotend fan on/off at specified timing."""
@@ -365,77 +402,22 @@ class LoopMoveX:
             gcmd.respond_info("Invalid D value. Must be non-negative milliseconds.")
             return
 
-        # Stop any existing hotend fan play cycle
-        if self.hotend_fan_play_timer is not None:
-            self.reactor.unregister_timer(self.hotend_fan_play_timer)
-            self.hotend_fan_play_timer = None
+        self.hotend_fan_play.stop()
 
-        # Check minimum time constraints and set fan accordingly
-        if on_time_ms < 50:
-            # U < 50ms: turn fan OFF
-            try:
-                hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
-                hotend_fan.heater_temp = 999999.0
-                hotend_fan.last_speed = 0.0
-                hotend_fan.fan.set_speed(0.0)
-                gcmd.respond_info("U below 50ms: hotend fan set to OFF (no cycling)")
-            except Exception as e:
-                gcmd.respond_info(f"Error setting hotend fan: {e}")
-                logging.exception("Error in PLAY_HOTEND_FAN")
+        # Handle edge cases for minimum cycle times
+        if on_time_ms < MIN_CYCLE_TIME_MS:
+            FanController.set_hotend_fan_state(self.printer, False)
+            gcmd.respond_info("U below 50ms: hotend fan set to OFF (no cycling)")
             return
 
-        if off_time_ms < 50:
-            # D < 50ms: turn fan ON (full speed)
-            try:
-                hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
-                hotend_fan.heater_temp = -999999.0
-                default_on_speed = float(getattr(hotend_fan, 'fan_speed', 1.0))
-                hotend_fan.last_speed = default_on_speed
-                hotend_fan.fan.set_speed(default_on_speed)
-                gcmd.respond_info("D below 50ms: hotend fan set to ON (no cycling)")
-            except Exception as e:
-                gcmd.respond_info(f"Error setting hotend fan: {e}")
-                logging.exception("Error in PLAY_HOTEND_FAN")
+        if off_time_ms < MIN_CYCLE_TIME_MS:
+            FanController.set_hotend_fan_state(self.printer, True)
+            gcmd.respond_info("D below 50ms: hotend fan set to ON (no cycling)")
             return
 
-        # Store settings
-        self.hotend_fan_play_on_time = on_time_ms / 1000.0  # Convert to seconds
-        self.hotend_fan_play_off_time = off_time_ms / 1000.0
-        self.hotend_fan_play_is_on = False
-
-        # Start the cycle
-        eventtime = self.reactor.monotonic()
-        self.hotend_fan_play_timer = self.reactor.register_timer(self._hotend_fan_play_callback, eventtime)
+        # Start cycling
+        self.hotend_fan_play.start(on_time_ms, off_time_ms)
         gcmd.respond_info(f"Hotend fan play started: U={on_time_ms}ms D={off_time_ms}ms")
-
-    def _hotend_fan_play_callback(self, eventtime):
-        """Callback to toggle hotend fan on/off in the play cycle."""
-        if self.hotend_fan_play_timer is None:
-            return self.reactor.NEVER
-
-        try:
-            hotend_fan = self.printer.lookup_object('heater_fan hotend_fan')
-            
-            if self.hotend_fan_play_is_on:
-                # Currently ON -> turn OFF
-                hotend_fan.heater_temp = 999999.0
-                hotend_fan.last_speed = 0.0
-                hotend_fan.fan.set_speed(0.0)
-                self.hotend_fan_play_is_on = False
-                next_time = eventtime + self.hotend_fan_play_off_time
-            else:
-                # Currently OFF -> turn ON
-                hotend_fan.heater_temp = -999999.0
-                default_on_speed = float(getattr(hotend_fan, 'fan_speed', 1.0))
-                hotend_fan.last_speed = default_on_speed
-                hotend_fan.fan.set_speed(default_on_speed)
-                self.hotend_fan_play_is_on = True
-                next_time = eventtime + self.hotend_fan_play_on_time
-
-            return next_time
-        except Exception:
-            logging.exception("Error in hotend fan play callback")
-            return self.reactor.NEVER
 
     def _schedule_next_move(self, eventtime=None):
         """Schedule next drip move. Accepts eventtime for reactor callback compatibility."""
