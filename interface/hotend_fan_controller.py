@@ -12,6 +12,7 @@ class HotendFanController:
     def __init__(self):
         self.params = {'u': DEFAULT_PLAY_HOTEND_FAN_TIME, 'd': DEFAULT_PLAY_HOTEND_FAN_TIME}
         self.combo_states = {'u': False, 'd': False}
+        self.params_set = {'u': False, 'd': False}  # Track if params have been set
         self.h_key_pressed_time = None
         self.h_combo_detected = False
     
@@ -46,15 +47,30 @@ class HotendFanController:
     def _get_prompt_and_default(self, param_key):
         """Get input prompt and default value based on parameter."""
         if param_key == 'u':
-            return f"Enter PLAY_HOTEND_FAN on_time_ms U (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms): ", DEFAULT_PLAY_HOTEND_FAN_TIME
+            if self.params_set['u']:
+                prompt = f"Enter PLAY_HOTEND_FAN on_time_ms U (last {self.params['u']}ms): "
+            else:
+                prompt = f"Enter PLAY_HOTEND_FAN on_time_ms U (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms): "
+            return prompt, DEFAULT_PLAY_HOTEND_FAN_TIME
         else:  # 'd'
-            return f"Enter PLAY_HOTEND_FAN off_time_ms D (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms): ", DEFAULT_PLAY_HOTEND_FAN_TIME
+            if self.params_set['d']:
+                prompt = f"Enter PLAY_HOTEND_FAN off_time_ms D (last {self.params['d']}ms): "
+            else:
+                prompt = f"Enter PLAY_HOTEND_FAN off_time_ms D (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms): "
+            return prompt, DEFAULT_PLAY_HOTEND_FAN_TIME
     
     def _get_user_input(self, prompt, default):
         """Get and validate user input."""
         try:
             user_input = input(prompt).strip()
-            return int(user_input) if user_input else default
+            if user_input:
+                # Determine which param we're setting based on prompt
+                if 'on_time' in prompt:
+                    self.params_set['u'] = True
+                else:
+                    self.params_set['d'] = True
+                return int(user_input)
+            return default
         except (ValueError, EOFError):
             print("Invalid input. Using default.")
             return default

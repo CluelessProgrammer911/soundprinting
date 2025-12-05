@@ -14,6 +14,7 @@ class FanController:
         self.params = {'u': DEFAULT_PLAY_FAN_TIME, 'd': DEFAULT_PLAY_FAN_TIME, 's': DEFAULT_PLAY_FAN_SPEED}
         self.last_speed = None
         self.combo_states = {'u': False, 'd': False, 's': False}
+        self.params_set = {'u': False, 'd': False, 's': False}  # Track if params have been set
     
     def handle_tune_input(self):
         """Handle F + number input for TUNE_FAN."""
@@ -48,12 +49,24 @@ class FanController:
     def _get_prompt_and_default(self, param_key):
         """Get input prompt and default value based on parameter."""
         if param_key == 'u':
-            return f"Enter PLAY_FAN on_time_ms U (default {DEFAULT_PLAY_FAN_TIME}ms): ", DEFAULT_PLAY_FAN_TIME
+            if self.params_set['u']:
+                prompt = f"Enter PLAY_FAN on_time_ms U (last {self.params['u']}ms): "
+            else:
+                prompt = f"Enter PLAY_FAN on_time_ms U (default {DEFAULT_PLAY_FAN_TIME}ms): "
+            return prompt, DEFAULT_PLAY_FAN_TIME
         elif param_key == 'd':
-            return f"Enter PLAY_FAN off_time_ms D (default {DEFAULT_PLAY_FAN_TIME}ms): ", DEFAULT_PLAY_FAN_TIME
+            if self.params_set['d']:
+                prompt = f"Enter PLAY_FAN off_time_ms D (last {self.params['d']}ms): "
+            else:
+                prompt = f"Enter PLAY_FAN off_time_ms D (default {DEFAULT_PLAY_FAN_TIME}ms): "
+            return prompt, DEFAULT_PLAY_FAN_TIME
         else:  # 's'
             default = self.last_speed if self.last_speed is not None else DEFAULT_PLAY_FAN_SPEED
-            return f"Enter PLAY_FAN speed level S (default {default}): ", default
+            if self.params_set['s']:
+                prompt = f"Enter PLAY_FAN speed level S (last {self.params['s']}): "
+            else:
+                prompt = f"Enter PLAY_FAN speed level S (default {default}): "
+            return prompt, default
     
     def _get_user_input(self, prompt, default, param_key):
         """Get and validate user input."""
@@ -64,6 +77,7 @@ class FanController:
                 if param_key == 's' and (value < 0 or value > 5):
                     print("Invalid speed level. Must be 0-5. Using default.")
                     return default
+                self.params_set[param_key] = True
                 return value
             return default
         except (ValueError, EOFError):
