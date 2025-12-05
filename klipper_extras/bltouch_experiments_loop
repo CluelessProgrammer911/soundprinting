@@ -1,0 +1,81 @@
+
+# bltouch_experiments_loop.py
+#
+# Custom BLTouch experiment loop for Klipper
+# Copyright (C) 2025 Your Name
+# Licensed under GNU GPLv3
+
+import logging
+
+class BLTouchLoop:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
+        self.gcode = self.printer.lookup_object('gcode')
+        self.bltouch = self.printer.lookup_object('probe')  # BLTouchProbe instance
+        self.loop_active = False
+        self.callback_handle = None
+        self.delay = config.getfloat('loop_delay', 0.5, above=0.)  # seconds
+
+        # Register G-code commands
+        self.gcode.register_command("START_BLTOUCH", self.cmd_START_BLTOUCH,
+                                    desc="Start BLTouch pin up/down loop")
+        self.gcode.register_command("STOP_BLTOUCH", self.cmd_STOP_BLTOUCH,
+                                    desc="Stop BLTouch pin up/down loop")
+
+    def cmd_START_BLTOUCH(self, gcmd):
+        if self.loop_active:
+            gcmd.respond_info("BLTouch loop already running.")
+            return
+        self.loop_active = True
+        gcmd.respond_info("Starting BLTouch loop...")
+        self._schedule_next(self.reactor.monotonic())
+
+    def cmd_STOP_BLTOUCH(self, gcmd):
+        if not self.loop_active:
+            gcmd.respond_info("BLTouch loop is not running.")
+            return
+        self.loop_active = False
+        if self.callback_handle:
+            self.reactor.unregister_timer(self.callback_handle)
+            self.callback_handle = None
+        gcmd.respond_info("Stopped BLTouch loop.")
+
+    def _schedule_next(self, waketime):
+        # Schedule the next iteration
+        self.callback_handle = self.reactor.register_timer(self._loop_iteration, waketime)
+
+    def _loop_iteration(self, eventtime):
+        if not self.loop_active:
+            return self.reactor.NEVER
+
+        try:
+            # Lower probe
+            self.bltouch.lower_probe()
+            self.bltouch.sync_print_time()
+            # Schedule raise after delay
+            self._schedule_next(eventtime + self.delay)
+            # Next step: raise probe
+            self.callback_handle = self.reactor.register_timer(self._raise_iteration, eventtime + self.delay)
+        except Exception as e:
+            logging.exception("BLTouch loop error: %s", str(e))
+            self.loop_active = False
+        return self.reactor.NEVER
+
+    def _raise_iteration(self, eventtime):
+        if not self.loop_active:
+            return self.reactor.NEVER
+
+        try:
+            # Raise probe
+            self.bltouch.raise_probe()
+            self.bltouch.sync_print_time()
+            # Schedule next lower after delay
+            self._schedule_next(eventtime + self.delay)
+        except Exception as e:
+            logging.exception("BLTouch loop error: %s", str(e))
+            self.loop_active = False
+        return self.reactor.NEVER
+
+def load_config(config):
+    return BLTouchLoop(config)
