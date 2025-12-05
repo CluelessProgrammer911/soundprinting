@@ -8,9 +8,8 @@ import websockets
 
 MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
 
-# MOONRAKER_WS = "ws://145.116.44.125:7125/websocket" #iotroam -- ip: pi@ender hostname -I 
-
 listen_mode = False
+motion_running = False
 ws_connection = None
 
 def toggle_mode():
@@ -37,17 +36,36 @@ async def send_gcode(script):
 
 def key_listener():
     """Listen for key presses and send G-code commands"""
+    global motion_running
+    
     while True:
         if listen_mode:
+            # Check for stop command ('s' key)
+            if keyboard.is_pressed('s'):
+                if motion_running:
+                    print("Pressed 's' - sending STOP_MOTION")
+                    asyncio.run(send_gcode("STOP_MOTION"))
+                    motion_running = False
+                    while keyboard.is_pressed('s'):
+                        time.sleep(0.01)
+                    time.sleep(0.1)
+            
             # Wait for 'x' key press
             if keyboard.is_pressed('x'):
                 time.sleep(0.05)  # Brief debounce
-                # Now check for number keys 1-5
-                for num in range(1, 6):
+                # Now check for number keys 0-5
+                for num in range(0, 6):
                     key_name = str(num)
                     if keyboard.is_pressed(key_name):
-                        print(f"Pressed 'x{num}' - sending START_MOTION X={num} Y=0 Z=0")
-                        asyncio.run(send_gcode(f"START_MOTION X={num} Y=0 Z=0"))
+                        if motion_running:
+                            # Motion already running - send CHANGE_MOTION
+                            print(f"Pressed 'x{num}' - sending CHANGE_MOTION X={num} Y=0 Z=0")
+                            asyncio.run(send_gcode(f"CHANGE_MOTION X={num} Y=0 Z=0"))
+                        else:
+                            # Motion not running - send START_MOTION
+                            print(f"Pressed 'x{num}' - sending START_MOTION X={num} Y=0 Z=0")
+                            asyncio.run(send_gcode(f"START_MOTION X={num} Y=0 Z=0"))
+                            motion_running = True
                         # Wait for x key release
                         while keyboard.is_pressed('x'):
                             time.sleep(0.01)
@@ -58,7 +76,8 @@ def key_listener():
 
 def main():
     print("Press CTRL+SHIFT+L to toggle listen mode.")
-    print("Press x1-x5 while listen mode is ON to send START_MOTION with different X presets.")
+    print("Press x0-x5 while listen mode is ON to START/CHANGE motion.")
+    print("Press 's' to stop motion.")
     print("Press ESC to stop the script completely.")
 
     keyboard.add_hotkey('ctrl+shift+l', toggle_mode)
