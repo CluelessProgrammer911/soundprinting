@@ -8,13 +8,11 @@ import websockets
 
 MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
 
+# Global state
 listen_mode = False
 motion_running = False
-debug_mode = False  # Set to True to see detailed G-code responses
-current_x = 0
-current_y = 0
-current_z = 0
-ws_connection = None
+debug_mode = False
+axis_values = {'x': 0, 'y': 0, 'z': 0}  # Track all axis values in one dict
 
 def toggle_mode():
     global listen_mode
@@ -23,7 +21,6 @@ def toggle_mode():
 
 async def send_gcode(script):
     """Send G-code command via Moonraker WebSocket"""
-    global ws_connection
     try:
         async with websockets.connect(MOONRAKER_WS) as ws:
             await ws.send(json.dumps({
@@ -33,99 +30,70 @@ async def send_gcode(script):
                 "id": 1
             }))
             resp = await ws.recv()
-            result = json.loads(resp)
             if debug_mode:
-                print(f"G-code response: {result}")
+                print(f"G-code response: {json.loads(resp)}")
     except Exception as e:
         print(f"Error sending G-code: {e}")
 
+def handle_axis_input(axis_key):
+    """Generic handler for any axis (x, y, or z) input"""
+    global motion_running, axis_values
+    
+    time.sleep(0.05)  # Brief debounce
+    
+    # Check for number keys 0-5
+    for num in range(0, 6):
+        if keyboard.is_pressed(str(num)):
+            axis_values[axis_key] = num
+            
+            # Build motion command with all current axis values
+            cmd_type = "CHANGE_MOTION" if motion_running else "START_MOTION"
+            gcode = f"{cmd_type} X={axis_values['x']} Y={axis_values['y']} Z={axis_values['z']}"
+            
+            print(f"Pressed '{axis_key}{num}' - sending {gcode}")
+            asyncio.run(send_gcode(gcode))
+            
+            if not motion_running:
+                motion_running = True
+            
+            # Wait for axis key release
+            while keyboard.is_pressed(axis_key):
+                time.sleep(0.01)
+            time.sleep(0.1)  # Debounce after release
+            return True
+    
+    return False
+
+def handle_stop():
+    """Handle stop command"""
+    global motion_running, axis_values
+    
+    if motion_running:
+        print("Pressed 's' - sending STOP_MOTION")
+        asyncio.run(send_gcode("STOP_MOTION"))
+        motion_running = False
+        axis_values = {'x': 0, 'y': 0, 'z': 0}
+        
+        while keyboard.is_pressed('s'):
+            time.sleep(0.01)
+        time.sleep(0.1)
+
 def key_listener():
     """Listen for key presses and send G-code commands"""
-    global motion_running, current_x, current_y, current_z
+    axes = ['x', 'y', 'z']
     
     while True:
         if listen_mode:
-            # Check for stop command ('s' key)
+            # Check for stop command
             if keyboard.is_pressed('s'):
-                if motion_running:
-                    print("Pressed 's' - sending STOP_MOTION")
-                    asyncio.run(send_gcode("STOP_MOTION"))
-                    motion_running = False
-                    current_x = 0
-                    current_y = 0
-                    current_z = 0
-                    while keyboard.is_pressed('s'):
-                        time.sleep(0.01)
-                    time.sleep(0.1)
+                handle_stop()
+                continue
             
-            # Wait for 'x' key press
-            if keyboard.is_pressed('x'):
-                time.sleep(0.05)  # Brief debounce
-                # Now check for number keys 0-5
-                for num in range(0, 6):
-                    key_name = str(num)
-                    if keyboard.is_pressed(key_name):
-                        current_x = num
-                        if motion_running:
-                            # Motion already running - send CHANGE_MOTION
-                            print(f"Pressed 'x{num}' - sending CHANGE_MOTION X={current_x} Y={current_y} Z={current_z}")
-                            asyncio.run(send_gcode(f"CHANGE_MOTION X={current_x} Y={current_y} Z={current_z}"))
-                        else:
-                            # Motion not running - send START_MOTION
-                            print(f"Pressed 'x{num}' - sending START_MOTION X={current_x} Y={current_y} Z={current_z}")
-                            asyncio.run(send_gcode(f"START_MOTION X={current_x} Y={current_y} Z={current_z}"))
-                            motion_running = True
-                        # Wait for x key release
-                        while keyboard.is_pressed('x'):
-                            time.sleep(0.01)
-                        time.sleep(0.1)  # Debounce after release
-                        break
-            
-            # Wait for 'y' key press
-            if keyboard.is_pressed('y'):
-                time.sleep(0.05)  # Brief debounce
-                # Now check for number keys 0-5
-                for num in range(0, 6):
-                    key_name = str(num)
-                    if keyboard.is_pressed(key_name):
-                        current_y = num
-                        if motion_running:
-                            # Motion already running - send CHANGE_MOTION
-                            print(f"Pressed 'y{num}' - sending CHANGE_MOTION X={current_x} Y={current_y} Z={current_z}")
-                            asyncio.run(send_gcode(f"CHANGE_MOTION X={current_x} Y={current_y} Z={current_z}"))
-                        else:
-                            # Motion not running - send START_MOTION
-                            print(f"Pressed 'y{num}' - sending START_MOTION X={current_x} Y={current_y} Z={current_z}")
-                            asyncio.run(send_gcode(f"START_MOTION X={current_x} Y={current_y} Z={current_z}"))
-                            motion_running = True
-                        # Wait for y key release
-                        while keyboard.is_pressed('y'):
-                            time.sleep(0.01)
-                        time.sleep(0.1)  # Debounce after release
-                        break
-            
-            # Wait for 'z' key press
-            if keyboard.is_pressed('z'):
-                time.sleep(0.05)  # Brief debounce
-                # Now check for number keys 0-5
-                for num in range(0, 6):
-                    key_name = str(num)
-                    if keyboard.is_pressed(key_name):
-                        current_z = num
-                        if motion_running:
-                            # Motion already running - send CHANGE_MOTION
-                            print(f"Pressed 'z{num}' - sending CHANGE_MOTION X={current_x} Y={current_y} Z={current_z}")
-                            asyncio.run(send_gcode(f"CHANGE_MOTION X={current_x} Y={current_y} Z={current_z}"))
-                        else:
-                            # Motion not running - send START_MOTION
-                            print(f"Pressed 'z{num}' - sending START_MOTION X={current_x} Y={current_y} Z={current_z}")
-                            asyncio.run(send_gcode(f"START_MOTION X={current_x} Y={current_y} Z={current_z}"))
-                            motion_running = True
-                        # Wait for z key release
-                        while keyboard.is_pressed('z'):
-                            time.sleep(0.01)
-                        time.sleep(0.1)  # Debounce after release
-                        break
+            # Check each axis key
+            for axis in axes:
+                if keyboard.is_pressed(axis):
+                    handle_axis_input(axis)
+                    break
         
         time.sleep(0.01)
 
