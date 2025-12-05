@@ -10,6 +10,7 @@ import msvcrt
 MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
 DEFAULT_PLAY_FAN_TIME = 1000
 DEFAULT_PLAY_FAN_SPEED = 5
+DEFAULT_PLAY_HOTEND_FAN_TIME = 1000
 
 # Global state
 listen_mode = False
@@ -17,6 +18,7 @@ motion_running = False
 debug_mode = False
 axis_values = {'x': 0, 'y': 0, 'z': 0}
 play_fan_params = {'u': DEFAULT_PLAY_FAN_TIME, 'd': DEFAULT_PLAY_FAN_TIME, 's': DEFAULT_PLAY_FAN_SPEED}
+play_hotend_fan_params = {'u': DEFAULT_PLAY_HOTEND_FAN_TIME, 'd': DEFAULT_PLAY_HOTEND_FAN_TIME}
 last_fan_speed = None
 
 def toggle_mode():
@@ -127,9 +129,53 @@ def handle_play_fan_param_input(param_key):
     # Send updated PLAY_FAN command
     send_play_fan_command()
 
+def handle_play_hotend_fan_param_input(param_key):
+    """Generic handler for PLAY_HOTEND_FAN parameter input (U or D)."""
+    global play_hotend_fan_params
+    
+    # Wait until H and param key are released
+    while keyboard.is_pressed('h') or keyboard.is_pressed(param_key):
+        time.sleep(0.01)
+
+    # Clear buffered key presses
+    while msvcrt.kbhit():
+        msvcrt.getch()
+
+    # Determine prompt and default based on parameter
+    param_upper = param_key.upper()
+    if param_upper == 'U':
+        prompt = f"Enter PLAY_HOTEND_FAN on_time_ms U (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms): "
+        default = DEFAULT_PLAY_HOTEND_FAN_TIME
+    else:  # D
+        prompt = f"Enter PLAY_HOTEND_FAN off_time_ms D (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms): "
+        default = DEFAULT_PLAY_HOTEND_FAN_TIME
+
+    # Get user input
+    try:
+        user_input = input(prompt).strip()
+        if user_input:
+            value = int(user_input)
+        else:
+            value = default
+    except (ValueError, EOFError):
+        print(f"Invalid input for {param_upper}. Using default.")
+        value = default
+
+    # Update parameter
+    play_hotend_fan_params[param_key] = value
+    
+    # Send updated PLAY_HOTEND_FAN command
+    send_play_hotend_fan_command()
+
 def send_play_fan_command():
     """Send PLAY_FAN command using current parameters."""
     gcode = f"PLAY_FAN S={play_fan_params['s']} U={play_fan_params['u']} D={play_fan_params['d']}"
+    print(f"Sending {gcode}")
+    asyncio.run(send_gcode(gcode))
+
+def send_play_hotend_fan_command():
+    """Send PLAY_HOTEND_FAN command using current parameters."""
+    gcode = f"PLAY_HOTEND_FAN U={play_hotend_fan_params['u']} D={play_hotend_fan_params['d']}"
     print(f"Sending {gcode}")
     asyncio.run(send_gcode(gcode))
 
@@ -137,10 +183,12 @@ def key_listener():
     """Listen for key presses and send G-code commands"""
     axes = ['x', 'y', 'z']
     play_fan_params_keys = ['u', 'd', 's']
-    global motion_running, axis_values, last_fan_speed, play_fan_params
+    play_hotend_fan_params_keys = ['u', 'd']
+    global motion_running, axis_values, last_fan_speed, play_fan_params, play_hotend_fan_params
     
     # Track combo states
     play_fan_combo_states = {key: False for key in play_fan_params_keys}
+    play_hotend_fan_combo_states = {key: False for key in play_hotend_fan_params_keys}
     
     while True:
         if listen_mode:
@@ -163,6 +211,19 @@ def key_listener():
                     combo_detected = True
                     continue
             
+            # Detect H+{U,D} combos for hotend fan
+            for param_key in play_hotend_fan_params_keys:
+                combo_pressed = keyboard.is_pressed('h') and keyboard.is_pressed(param_key)
+                if combo_pressed and not play_hotend_fan_combo_states[param_key]:
+                    play_hotend_fan_combo_states[param_key] = True
+                    combo_detected = True
+                    continue
+                if not combo_pressed and play_hotend_fan_combo_states[param_key]:
+                    play_hotend_fan_combo_states[param_key] = False
+                    handle_play_hotend_fan_param_input(param_key)
+                    combo_detected = True
+                    continue
+            
             if combo_detected:
                 continue
 
@@ -175,7 +236,7 @@ def key_listener():
                         print(f"Pressed 'f{num}' - sending {gcode}")
                         asyncio.run(send_gcode(gcode))
                         last_fan_speed = num
-                        play_fan_params['s'] = num  # Update play_fan_params immediately
+                        play_fan_params['s'] = num
                         while keyboard.is_pressed('f'):
                             time.sleep(0.01)
                         time.sleep(0.1)
@@ -197,6 +258,8 @@ def main():
     print(f"Hold F+U to enter PLAY_FAN on_time_ms U (default {DEFAULT_PLAY_FAN_TIME}ms).")
     print(f"Hold F+D to enter PLAY_FAN off_time_ms D (default {DEFAULT_PLAY_FAN_TIME}ms).")
     print(f"Hold F+S to enter PLAY_FAN speed level S (default {DEFAULT_PLAY_FAN_SPEED}).")
+    print(f"Hold H+U to enter PLAY_HOTEND_FAN on_time_ms U (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms).")
+    print(f"Hold H+D to enter PLAY_HOTEND_FAN off_time_ms D (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms).")
     print("Press 'q' to stop motion.")
     print("Press ESC to stop the script completely.")
 
