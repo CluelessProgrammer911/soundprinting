@@ -64,6 +64,25 @@ def handle_axis_input(axis_key):
     
     return False
 
+def handle_fan_input(fan_key):
+    """Generic handler for fan control input"""
+    time.sleep(0.05)  # Brief debounce
+    
+    # Check for number keys 0-5
+    for num in range(0, 6):
+        if keyboard.is_pressed(str(num)):
+            gcode = f"TUNE_FAN S={num}"
+            print(f"Pressed '{fan_key}{num}' - sending {gcode}")
+            asyncio.run(send_gcode(gcode))
+            
+            # Wait for fan key release
+            while keyboard.is_pressed(fan_key):
+                time.sleep(0.01)
+            time.sleep(0.1)  # Debounce after release
+            return True
+    
+    return False
+
 def handle_stop():
     """Handle stop command"""
     global motion_running, axis_values
@@ -89,6 +108,11 @@ def key_listener():
                 handle_stop()
                 continue
             
+            # Check fan control
+            if keyboard.is_pressed('f'):
+                handle_fan_input('f')
+                continue
+            
             # Check each axis key
             for axis in axes:
                 if keyboard.is_pressed(axis):
@@ -100,6 +124,7 @@ def key_listener():
 def main():
     print("Press CTRL+SHIFT+L to toggle listen mode.")
     print("Press x0-x5, y0-y5, or z0-z5 while listen mode is ON to START/CHANGE motion.")
+    print("Press f0-f5 while listen mode is ON to set fan speed (0=OFF, 5=100%).")
     print("Press 's' to stop motion.")
     print("Press ESC to stop the script completely.")
 
