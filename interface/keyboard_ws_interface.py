@@ -179,6 +179,17 @@ def send_play_hotend_fan_command():
     print(f"Sending {gcode}")
     asyncio.run(send_gcode(gcode))
 
+def handle_toggle_hotend_fan():
+    """Handle hotend fan toggle command."""
+    gcode = "TOGGLE_HOTEND_FAN"
+    print(f"Pressed 'h' - sending {gcode}")
+    asyncio.run(send_gcode(gcode))
+    
+    # Wait for H key release
+    while keyboard.is_pressed('h'):
+        time.sleep(0.01)
+    time.sleep(0.1)
+
 def key_listener():
     """Listen for key presses and send G-code commands"""
     axes = ['x', 'y', 'z']
@@ -189,6 +200,8 @@ def key_listener():
     # Track combo states
     play_fan_combo_states = {key: False for key in play_fan_params_keys}
     play_hotend_fan_combo_states = {key: False for key in play_hotend_fan_params_keys}
+    h_key_pressed_time = None
+    h_combo_detected = False
     
     while True:
         if listen_mode:
@@ -212,17 +225,31 @@ def key_listener():
                     continue
             
             # Detect H+{U,D} combos for hotend fan
-            for param_key in play_hotend_fan_params_keys:
-                combo_pressed = keyboard.is_pressed('h') and keyboard.is_pressed(param_key)
-                if combo_pressed and not play_hotend_fan_combo_states[param_key]:
-                    play_hotend_fan_combo_states[param_key] = True
-                    combo_detected = True
-                    continue
-                if not combo_pressed and play_hotend_fan_combo_states[param_key]:
-                    play_hotend_fan_combo_states[param_key] = False
-                    handle_play_hotend_fan_param_input(param_key)
-                    combo_detected = True
-                    continue
+            h_pressed = keyboard.is_pressed('h')
+            if h_pressed:
+                if h_key_pressed_time is None:
+                    h_key_pressed_time = time.time()
+                
+                # Check for H+U or H+D combo
+                for param_key in play_hotend_fan_params_keys:
+                    combo_pressed = keyboard.is_pressed('h') and keyboard.is_pressed(param_key)
+                    if combo_pressed and not play_hotend_fan_combo_states[param_key]:
+                        play_hotend_fan_combo_states[param_key] = True
+                        h_combo_detected = True
+                        combo_detected = True
+                        continue
+                    if not combo_pressed and play_hotend_fan_combo_states[param_key]:
+                        play_hotend_fan_combo_states[param_key] = False
+                        handle_play_hotend_fan_param_input(param_key)
+                        combo_detected = True
+                        continue
+            else:
+                # H key released
+                if h_key_pressed_time is not None and not h_combo_detected:
+                    # Was H press without combo - toggle hotend fan
+                    handle_toggle_hotend_fan()
+                h_key_pressed_time = None
+                h_combo_detected = False
             
             if combo_detected:
                 continue
@@ -258,6 +285,7 @@ def main():
     print(f"Hold F+U to enter PLAY_FAN on_time_ms U (default {DEFAULT_PLAY_FAN_TIME}ms).")
     print(f"Hold F+D to enter PLAY_FAN off_time_ms D (default {DEFAULT_PLAY_FAN_TIME}ms).")
     print(f"Hold F+S to enter PLAY_FAN speed level S (default {DEFAULT_PLAY_FAN_SPEED}).")
+    print("Press 'h' to toggle hotend fan on/off.")
     print(f"Hold H+U to enter PLAY_HOTEND_FAN on_time_ms U (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms).")
     print(f"Hold H+D to enter PLAY_HOTEND_FAN off_time_ms D (default {DEFAULT_PLAY_HOTEND_FAN_TIME}ms).")
     print("Press 'q' to stop motion.")
