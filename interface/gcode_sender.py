@@ -2,7 +2,9 @@ import asyncio
 import json
 import websockets
 
-MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
+# MOONRAKER_WS = "ws://192.168.101.8:7125/websocket"
+MOONRAKER_WS = "ws://localhost:7125/websocket"
+
 
 debug_mode = False
 

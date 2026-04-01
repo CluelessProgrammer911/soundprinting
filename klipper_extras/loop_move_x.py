@@ -1,24 +1,6 @@
 import logging
 
 # Centralized motion presets: (step_distance, speed)
-# MOTION_SETTINGS_XY = {
-#     0: (0.0, 0.0),
-#     1: (0.45, 10.0),
-#     2: (0.80, 20.0),
-#     3: (1.05, 30.0),
-#     4: (1.20, 40.0),
-#     5: (1.25, 50.0)
-# }
-
-# MOTION_SETTINGS_Z = {
-#     0: (0.0, 0.0),
-#     1: (0.023, 0.5),
-#     2: (0.04, 1),
-#     3: (0.053, 1.5),
-#     4: (0.06, 2),
-#     5: (0.063, 5)
-# }
-
 MOTION_SETTINGS_XY = {
     0: (0.0, 0.0),
     1: (0.95, 10.0),
@@ -47,17 +29,22 @@ FAN_SPEED_PRESETS = {
     5: 1.0
 }
 
+# Axis bounds: (min, max) in mm
+AXIS_BOUNDS_X = (-10.0, 234.0)
+AXIS_BOUNDS_Y = (-8.0, 234.0)
+AXIS_BOUNDS_Z = (2.0, 270.0)
+
 MIN_CYCLE_TIME_MS = 50  # Minimum time for fan cycling to avoid system issues
 
 class AxisConfig:
     """Configuration for a single axis."""
-    def __init__(self, index, name, domain, settings_dict, default_step=1.25, default_speed=50.0):
+    def __init__(self, index, name, domain, settings_dict):
         self.index = index  # Position index in toolhead coords (0=X, 1=Y, 2=Z)
         self.name = name
         self.domain = domain  # (min, max) tuple
         self.settings_dict = settings_dict
-        self.step_distance = default_step
-        self.speed = default_speed
+        self.step_distance = 0.0
+        self.speed = 0.0
         self.direction = 1
 
     def apply_preset(self, val):
@@ -235,9 +222,9 @@ class LoopMoveX:
         
         # Configure axes
         self.axes = {
-            'X': AxisConfig(0, 'X', (-10.0, 234.0), MOTION_SETTINGS_XY, 1.25, 50.0),
-            'Y': AxisConfig(1, 'Y', (-8.0, 234.0), MOTION_SETTINGS_XY, 1.25, 50.0),
-            'Z': AxisConfig(2, 'Z', (2.0, 270.0), MOTION_SETTINGS_Z, 0.063, 2.5)
+            'X': AxisConfig(0, 'X', AXIS_BOUNDS_X, MOTION_SETTINGS_XY),
+            'Y': AxisConfig(1, 'Y', AXIS_BOUNDS_Y, MOTION_SETTINGS_XY),
+            'Z': AxisConfig(2, 'Z', AXIS_BOUNDS_Z, MOTION_SETTINGS_Z)
         }
 
         # Register G-code commands
