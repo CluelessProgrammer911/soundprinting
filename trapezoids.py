@@ -199,18 +199,28 @@ def plot_sequential_profiles(velocity_indices):
     # Labels and formatting
     plt.xlabel('Time (ms)', fontsize=12)
     plt.ylabel('Velocity (mm/s)', fontsize=12)
-    plt.title(f'Sequential Trapezoidal Profiles: {velocity_indices}', fontsize=14)
+    plt.title('Sequential Trapezoidal Profiles', fontsize=14)
     plt.grid(True, alpha=0.3)
     plt.ylim(0, max(VELOCITY_MAP.values()) * 1.1)
     
-    # Add legend with velocity values
-    velocity_labels = [f'{idx}→{VELOCITY_MAP[idx]} mm/s' for idx in velocity_indices]
-    plt.text(0.02, 0.98, f'Sequence: {", ".join(velocity_labels)}', 
-             transform=plt.gca().transAxes, fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    
     plt.tight_layout()
     plt.show()
+
+
+def annotate_sequence_labels(ax, velocity_indices, axis_prefix, text_color):
+    """Annotate each profile segment with an axis-prefixed index label at the top of an axis."""
+    for i, idx in enumerate(velocity_indices):
+        center_time_ms = (i + 0.5) * DELTA_TIME * 1000
+        ax.text(
+            center_time_ms,
+            0.96,
+            f'{axis_prefix}{idx}',
+            transform=ax.get_xaxis_transform(),
+            ha='center',
+            va='top',
+            fontsize=10,
+            color=text_color
+        )
 
 
 def plot_dual_stepper_profiles(x_velocity_indices, y_velocity_indices):
@@ -224,7 +234,7 @@ def plot_dual_stepper_profiles(x_velocity_indices, y_velocity_indices):
                           Example: [1, 2, 3, 4, 5, 0, 1]
     """
     # Create figure with 2 subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, constrained_layout=True)
     
     # Plot X stepper
     x_velocities = [VELOCITY_MAP_XY[idx] for idx in x_velocity_indices]
@@ -244,16 +254,11 @@ def plot_dual_stepper_profiles(x_velocity_indices, y_velocity_indices):
         boundary_time = i * DELTA_TIME
         ax1.axvline(x=boundary_time * 1000, color='r', linestyle='--', alpha=0.3)
     
-    ax1.set_xlabel('Time (ms)', fontsize=12)
     ax1.set_ylabel('Velocity (mm/s)', fontsize=12)
-    ax1.set_title(f'X Stepper: {x_velocity_indices}', fontsize=14)
+    ax1.set_title('X Stepper', fontsize=14)
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(0, max(VELOCITY_MAP_XY.values()) * 1.1)
-    
-    x_labels = [f'{idx}→{VELOCITY_MAP_XY[idx]} mm/s' for idx in x_velocity_indices]
-    ax1.text(0.02, 0.98, f'Sequence: {", ".join(x_labels)}', 
-             transform=ax1.transAxes, fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    annotate_sequence_labels(ax1, x_velocity_indices, 'x', 'b')
     
     # Plot Y stepper
     y_velocities = [VELOCITY_MAP_XY[idx] for idx in y_velocity_indices]
@@ -275,16 +280,11 @@ def plot_dual_stepper_profiles(x_velocity_indices, y_velocity_indices):
     
     ax2.set_xlabel('Time (ms)', fontsize=12)
     ax2.set_ylabel('Velocity (mm/s)', fontsize=12)
-    ax2.set_title(f'Y Stepper: {y_velocity_indices}', fontsize=14)
+    ax2.set_title('Y Stepper', fontsize=14)
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(0, max(VELOCITY_MAP_XY.values()) * 1.1)
-    
-    y_labels = [f'{idx}→{VELOCITY_MAP_XY[idx]} mm/s' for idx in y_velocity_indices]
-    ax2.text(0.02, 0.98, f'Sequence: {", ".join(y_labels)}', 
-             transform=ax2.transAxes, fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
-    
-    plt.tight_layout()
+    annotate_sequence_labels(ax2, y_velocity_indices, 'y', 'g')
+
     plt.show()
 
 
@@ -301,7 +301,7 @@ def plot_triple_stepper_profiles(x_velocity_indices, y_velocity_indices, z_veloc
                           Example: [0, 1, 2, 3, 4, 5, 0]
     """
     # Create figure with 3 subplots
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12))
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, constrained_layout=True)
     
     # Plot X stepper
     x_velocities = [VELOCITY_MAP_XY[idx] for idx in x_velocity_indices]
@@ -321,16 +321,11 @@ def plot_triple_stepper_profiles(x_velocity_indices, y_velocity_indices, z_veloc
         boundary_time = i * DELTA_TIME
         ax1.axvline(x=boundary_time * 1000, color='r', linestyle='--', alpha=0.3)
     
-    ax1.set_xlabel('Time (ms)', fontsize=12)
     ax1.set_ylabel('Velocity (mm/s)', fontsize=12)
-    ax1.set_title(f'X Stepper: {x_velocity_indices}', fontsize=14)
+    ax1.set_title('X Stepper', fontsize=14)
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(0, max(VELOCITY_MAP_XY.values()) * 1.1)
-    
-    x_labels = [f'{idx}→{VELOCITY_MAP_XY[idx]} mm/s' for idx in x_velocity_indices]
-    ax1.text(0.02, 0.98, f'Sequence: {", ".join(x_labels)}', 
-             transform=ax1.transAxes, fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    annotate_sequence_labels(ax1, x_velocity_indices, 'x', 'b')
     
     # Plot Y stepper
     y_velocities = [VELOCITY_MAP_XY[idx] for idx in y_velocity_indices]
@@ -350,16 +345,11 @@ def plot_triple_stepper_profiles(x_velocity_indices, y_velocity_indices, z_veloc
         boundary_time = i * DELTA_TIME
         ax2.axvline(x=boundary_time * 1000, color='r', linestyle='--', alpha=0.3)
     
-    ax2.set_xlabel('Time (ms)', fontsize=12)
     ax2.set_ylabel('Velocity (mm/s)', fontsize=12)
-    ax2.set_title(f'Y Stepper: {y_velocity_indices}', fontsize=14)
+    ax2.set_title('Y Stepper', fontsize=14)
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(0, max(VELOCITY_MAP_XY.values()) * 1.1)
-    
-    y_labels = [f'{idx}→{VELOCITY_MAP_XY[idx]} mm/s' for idx in y_velocity_indices]
-    ax2.text(0.02, 0.98, f'Sequence: {", ".join(y_labels)}', 
-             transform=ax2.transAxes, fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
+    annotate_sequence_labels(ax2, y_velocity_indices, 'y', 'g')
     
     # Plot Z stepper
     z_velocities = [VELOCITY_MAP_Z[idx] for idx in z_velocity_indices]
@@ -381,16 +371,11 @@ def plot_triple_stepper_profiles(x_velocity_indices, y_velocity_indices, z_veloc
     
     ax3.set_xlabel('Time (ms)', fontsize=12)
     ax3.set_ylabel('Velocity (mm/s)', fontsize=12)
-    ax3.set_title(f'Z Stepper: {z_velocity_indices}', fontsize=14)
+    ax3.set_title('Z Stepper', fontsize=14)
     ax3.grid(True, alpha=0.3)
     ax3.set_ylim(0, max(VELOCITY_MAP_Z.values()) * 1.2)
-    
-    z_labels = [f'{idx}→{VELOCITY_MAP_Z[idx]} mm/s' for idx in z_velocity_indices]
-    ax3.text(0.02, 0.98, f'Sequence: {", ".join(z_labels)}', 
-             transform=ax3.transAxes, fontsize=9, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='plum', alpha=0.5))
-    
-    plt.tight_layout()
+    annotate_sequence_labels(ax3, z_velocity_indices, 'z', 'm')
+
     plt.show()
 
 
@@ -413,7 +398,7 @@ if __name__ == "__main__":
     # plot_dual_stepper_profiles(x_velocity_indices, y_velocity_indices)
     
     # Plot sequential profiles for triple steppers (x, y, and z)
-    x_velocity_indices = [0, 3, 4, 1, 2, 3, 5]
-    y_velocity_indices = [1, 2, 3, 4, 5, 0, 1]
-    z_velocity_indices = [0, 1, 2, 3, 4, 5, 0]
+    x_velocity_indices = [0, 1, 2, 3, 4, 5, 5]
+    y_velocity_indices = [1, 5, 4, 4, 3, 2, 0]
+    z_velocity_indices = [0, 0, 3, 3, 4, 2, 0]
     plot_triple_stepper_profiles(x_velocity_indices, y_velocity_indices, z_velocity_indices)
