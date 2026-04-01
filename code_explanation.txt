@@ -1,0 +1,346 @@
+HIGH-LEVEL EXPLANATION OF loop_move_x.py
+==========================================
+
+PURPOSE
+-------
+loop_move_x.py is a Klipper extra module that enables real-time, independently-controllable 
+looping motion on 3D printer axes (X, Y, Z) with integrated fan control. It's designed for 
+interactive testing where you can adjust each axis speed/direction independently via the 
+keyboard interface (keyboard_ws_interface.py) while motion is running. The drip-feed 
+architecture with tiny incremental steps allows responsive parameter changes without 
+stopping motion.
+
+CORE FUNCTIONALITY
+------------------
+
+1. CONTINUOUS MOTION CONTROL (Real-Time Adjustable)
+   - Moves X, Y, and Z axes continuously between defined boundaries
+   - Each axis loops back and forth within its configured min/max range
+   - Motion parameters (step distance and speed) are controlled via preset levels (0-5)
+   - Axes move independently but are coordinated through Klipper's motion queue
+   - Direction automatically reverses when reaching boundaries
+   - Keyboard interface allows real-time, per-axis parameter changes without stopping motion
+
+2. PRESET SYSTEM
+   - MOTION_SETTINGS_XY: 6 levels (0-5) defining step distances and speeds for X/Y axes
+     Example: Level 5 = 5.0mm steps at 100mm/s
+   - MOTION_SETTINGS_Z: 6 levels (0-5) for Z axis with smaller, slower movements
+     Example: Level 5 = 0.25mm steps at 5mm/s
+   - FAN_SPEED_PRESETS: 6 levels (0-5) mapping to fan speeds (0.0 to 1.0)
+
+3. FAN CONTROL (Real-Time Adjustable, Asynchronously Independent)
+   - Part cooling fan: Static speed control and on/off cycling via TUNE_FAN or PLAY_FAN
+   - Hotend fan: Toggle on/off and on/off cycling via TOGGLE_HOTEND_FAN or PLAY_HOTEND_FAN
+   - Keyboard interface allows live fan parameter changes independent of motion loop
+   - Fan control runs asynchronously: changes take effect immediately without affecting motion
+   - Cycling allows testing with configurable on-time and off-time (in milliseconds)
+   - Minimum cycle time of 50ms enforced to prevent system issues
+
+
+KEY CLASSES
+-----------
+
+AxisConfig:
+  - Manages individual axis configuration (bounds, speed, step distance, direction)
+  - Computes next position and handles boundary collision/reversal
+
+FanController (static utility):
+  - Provides methods to control part cooling fan and hotend fan
+
+FanPlayController (base class):
+  - Implements timer-based cycling logic for fans
+  - Handles on/off transitions at specified intervals
+
+PartCoolingFanPlay:
+  - Cycles part cooling fan at a specified speed level
+
+HotendFanPlay:
+  - Cycles hotend heater fan between on and off states
+
+LoopMoveX (main class):
+  - Orchestrates all functionality with real-time responsiveness to parameter changes
+  - Manages three AxisConfig instances (X, Y, Z) that can be independently adjusted
+  - Implements drip-move scheduling loop via reactor callbacks for responsive control
+  - Manages independent fan controllers (PartCoolingFanPlay, HotendFanPlay)
+  - Registers and handles G-code commands from keyboard_ws_interface.py
+
+
+G-CODE COMMANDS
+---------------
+
+Motion:
+  START_MOTION [X=level] [Y=level] [Z=level]  - Start continuous looping
+  STOP_MOTION                                  - Stop all motion
+  CHANGE_MOTION [X=level] [Y=level] [Z=level] - Modify motion while running
+
+Fan Control:
+  TUNE_FAN S=level                             - Set static fan speed
+  TOGGLE_HOTEND_FAN                            - Toggle hotend fan on/off
+  PLAY_FAN S=level U=on_ms D=off_ms           - Cycle part cooling fan
+  PLAY_HOTEND_FAN U=on_ms D=off_ms            - Cycle hotend fan
+
+
+MOTION ALGORITHM
+----------------
+
+1. User calls START_MOTION with desired levels for each axis
+2. Module records current position and applies preset settings
+3. Initial direction determined based on proximity to boundaries
+4. Drip-feed loop continuously:
+   a. Computes next position for each axis (current + step * direction)
+   b. Checks boundaries and reverses direction if needed
+   c. Submits coordinated move to Klipper's motion queue
+   d. Schedules next iteration via reactor callback
+5. Process continues until STOP_MOTION is called
+
+
+KEY DESIGN INSIGHT: Real-Time Interactive Control via Dual Architecture
+--------------------------------------------------------------------------
+
+STEPPER MOTION: Drip-Feed Architecture for Responsive Per-Axis Control
+
+The drip-feed approach (tiny incremental steps) enables real-time independent axis control:
+- Each axis step is scheduled individually through the reactor callback system
+- This creates many small, quick moves rather than few large moves
+- When user changes X/Y/Z level via keyboard (e.g., pressing "x3"), the new preset 
+  parameters are loaded into the AxisConfig objects immediately
+- The NEXT scheduled drip-move uses the updated parameters
+- This enables independent per-axis control that responds within milliseconds
+
+Why drip-feed matters:
+- Klipper's motion queue normally requires waiting for large coordinated moves to complete
+- Tiny steps (0.95-5.0mm for XY, 0.09-0.25mm for Z) allow responses within milliseconds
+- Each axis can be independently adjusted mid-motion without stopping
+- The coordinated queue architecture is preserved (all axes move together), but 
+  parameters feeding that queue can change rapidly
+
+FAN CONTROL: Asynchronously Independent Operation
+
+Fan control operates completely independently from the motion loop:
+- Fan cycling (PLAY_FAN, PLAY_HOTEND_FAN) runs on separate reactor timers
+- Changes to fan speed or cycling parameters take effect immediately
+- Fan operations don't interfere with motion control or vice versa
+- Keyboard interface can adjust fans while motion is running without disruption
+- This true asynchronous independence allows simultaneous motion + fan testing
+
+
+TECHNICAL NOTES
+---------------
+
+- Uses Klipper's reactor system for event-driven callbacks for both motion and fans
+- Motion: Stepper movements go through single coordinated toolhead.drip_move() calls,
+  but drip-feed scheduling allows per-axis parameter updates between moves
+- Fans: Controlled via separate reactor timers running asynchronously, fully independent
+  from motion loop execution
+- Tiny step sizes (0.95-5.0mm XY, 0.09-0.25mm Z) enable ~10-100ms responsiveness to
+  keyboard input changes
+- Keyboard_ws_interface.py sends G-code commands asynchronously via WebSocket, allowing
+  real-time control without blocking
+- Boundary detection prevents stepper moves outside configured limits
+- True asynchronous architecture: motion and fans can be controlled independently and
+
+
+CODING FLOW: FROM KEYBOARD INPUT TO DRIP-FEED MOTION
+-----------------------------------------------------
+
+Example: User starts X-axis motion at maximum speed (level 5)
+
+### PHASE 1: Keyboard Input Capture (keyboard_ws_interface.py)
+
+1. **User Input**:
+   - User presses `CTRL+SHIFT+L` → KeyListener.toggle_listen_mode() sets listen_mode=True
+   - User presses `X` then `5`
+
+2. **KeyListener.run() Loop** (key_listener.py):
+   - Detects `X` key is pressed
+   - Calls axis_ctrl.handle_input('x')
+
+3. **AxisController.handle_input('x')** (axis_controller.py):
+   - Detects `5` is also pressed (line check: keyboard.is_pressed('5'))
+   - Sets self.values['x'] = 5
+   - Calls self._send_motion_command()
+
+4. **AxisController._send_motion_command()** (axis_controller.py):
+   - Checks motion_running flag: False (no motion yet)
+   - Constructs command: "START_MOTION X=5 Y=0 Z=0"
+   - Calls asyncio.run(send_gcode("START_MOTION X=5 Y=0 Z=0"))
+   - Sets self.motion_running = True
+
+5. **send_gcode() Function** (gcode_sender.py):
+   - Opens WebSocket connection to Moonraker at ws://localhost:7125/websocket
+   - Sends JSON-RPC command: {"method": "printer.gcode.script", "params": {"script": "START_MOTION X=5 Y=0 Z=0"}}
+   - Moonraker forwards G-code to Klipper
+
+### PHASE 2: Command Reception and Setup (loop_move_x.py)
+
+6. **Klipper G-code Dispatcher**:
+   - Receives "START_MOTION X=5 Y=0 Z=0"
+   - Looks up registered command handler
+   - Calls LoopMoveX.cmd_START_MOTION(gcmd)
+
+7. **cmd_START_MOTION(gcmd)** (loop_move_x.py):
+   - Extracts parameters: X=5, Y=0, Z=0 from gcmd object
+   - Validates: All values are 0-5
+   
+8. **Apply Presets to Each Axis**:
+   - **X-axis**: x_axis.apply_preset(5)
+     - Looks up MOTION_SETTINGS_XY[5] = (5.0, 100.0)
+     - Sets x_axis.step_distance = 5.0 mm
+     - Sets x_axis.speed = 100.0 mm/s
+   - **Y-axis**: y_axis.apply_preset(0)
+     - Looks up MOTION_SETTINGS_XY[0] = (0.0, 0.0)
+     - Sets y_axis.step_distance = 0.0 mm (stationary)
+     - Sets y_axis.speed = 0.0 mm/s
+   - **Z-axis**: z_axis.apply_preset(0)
+     - Looks up MOTION_SETTINGS_Z[0] = (0.0, 0.0)
+     - Sets z_axis.step_distance = 0.0 mm (stationary)
+     - Sets z_axis.speed = 0.0 mm/s
+
+9. **Record Current Position**:
+   - Calls self.toolhead.get_position() → returns [current_x, current_y, current_z, e]
+   - Example: [117.0, 112.0, 135.0, 0.0]
+   - Stores as self.origin_pos
+
+10. **Determine Initial Direction** (for X-axis only, others stationary):
+    - x_axis.determine_initial_direction(current_x=117.0)
+    - X-axis domain: (-10, 234)
+    - Distance to min: |117.0 - (-10)| = 127.0
+    - Distance to max: |117.0 - 234| = 117.0
+    - Max is closer → x_axis.direction = 1 (move forward toward max)
+
+11. **Activate Motion Loop**:
+    - Sets self.motion_active = True
+    - Calls self._schedule_next_move() to start drip-feed loop
+
+### PHASE 3: Drip-Feed Execution Loop (loop_move_x.py)
+
+12. **_schedule_next_move()** (initial call):
+    - Calls reactor.register_callback(self._schedule_next_move)
+    - Schedules itself to run ASAP on reactor event loop
+    - Returns immediately (non-blocking)
+
+13. **_schedule_next_move()** (callback execution):
+    - **X-axis computation**:
+      - Calls x_axis.compute_next_position(current_x=117.0)
+      - next_x = 117.0 + (5.0 * 1) = 122.0
+      - Checks bounds: 122.0 is within (-10, 234) ✓
+      - Returns 122.0
+    
+    - **Y-axis computation**:
+      - y_axis.step_distance = 0.0 → stationary
+      - Returns current_y (no change)
+    
+    - **Z-axis computation**:
+      - z_axis.step_distance = 0.0 → stationary
+      - Returns current_z (no change)
+
+14. **Execute Coordinated Move**:
+    - Constructs newpos = [122.0, 112.0, 135.0, 0.0]
+    - Determines move_speed = max(x_axis.speed, y_axis.speed, z_axis.speed) = 100.0 mm/s
+    - Calls toolhead.drip_move(newpos, 100.0)
+    
+15. **toolhead.drip_move()** (Klipper core):
+    - Validates move is within print bounds
+    - Calculates move distance: 5.0 mm (X changed, Y/Z static)
+    - Converts to stepper motor commands
+    - Queues move into motion planner
+    - Stepper motors execute: X-axis moves 5.0mm at 100mm/s
+    - Move duration: ~0.05 seconds (50ms)
+
+16. **Schedule Next Iteration**:
+    - Still in _schedule_next_move() callback
+    - Checks if self.motion_active: True ✓
+    - Calls reactor.register_callback(self._schedule_next_move)
+    - Schedules next iteration immediately
+    - Current iteration ends
+
+17. **Next Iteration** (callback fires again ~50ms later):
+    - X-axis: current_x now = 122.0
+    - Computes next_x = 122.0 + 5.0 = 127.0
+    - Calls toolhead.drip_move([127.0, 112.0, 135.0, 0.0], 100.0)
+    - X-axis moves another 5.0mm
+    - Schedules next iteration...
+
+18. **Boundary Reversal Example** (after many iterations):
+    - X-axis reaches current_x = 232.0
+    - Computes next_x = 232.0 + 5.0 = 237.0
+    - Exceeds domain max (234) ✗
+    - Clamps: next_x = 234.0
+    - Reverses direction: x_axis.direction = -1
+    - Next iteration: next_x = 234.0 + (5.0 * -1) = 229.0
+    - X-axis now moves backward toward min bound
+
+19. **Loop Continues**:
+    - Drip-feed continues indefinitely
+    - Each iteration: compute → move → schedule
+    - Cycle time: ~50-100ms per iteration
+    - X-axis oscillates between bounds at 100mm/s
+    - Y/Z remain stationary (step_distance=0)
+
+### PHASE 4: Real-Time Parameter Change (optional)
+
+20. **User Changes Speed** (while motion running):
+    - User presses `X3` (reducing to level 3)
+    - KeyListener → AxisController.handle_input('x')
+    - motion_running=True → sends "CHANGE_MOTION X=3 Y=0 Z=0"
+    - cmd_CHANGE_MOTION(gcmd) called
+    - x_axis.apply_preset(3) → step_distance=3.75mm, speed=50mm/s
+    - **Next drip-feed iteration** uses new values immediately
+    - X-axis smoothly transitions to 3.75mm steps at 50mm/s
+    - No stopping or restarting required
+
+### PHASE 5: Stopping Motion
+
+21. **User Stops Motion**:
+    - User presses `Q`
+    - KeyListener → AxisController.stop()
+    - Sends "STOP_MOTION" command
+    - cmd_STOP_MOTION(gcmd) called
+    - Sets self.motion_active = False
+    - Next _schedule_next_move() iteration checks flag → exits without rescheduling
+    - Motion stops, toolhead holds position
+    - Resets: self.origin_pos = None
+
+KEY TIMING CHARACTERISTICS:
+- Single iteration duration: ~50-100ms (depends on step_distance and speed)
+- Responsiveness to parameter changes: 1 iteration (50-100ms latency)
+- X-axis at level 5: 5.0mm per 50ms = 100mm/s sustained speed
+- WebSocket command latency: ~10-30ms (network + processing)
+- Total user input → motion change: ~60-130ms
+  simultaneously without interference
+
+...existing code...
+
+CODING FLOW: F+3 (TUNE_FAN S=3)
+--------------------------------
+
+PHASE 1: Keyboard Input Capture (keyboard_ws_interface.py)
+- Prerequisite: Listen mode ON (CTRL+SHIFT+L).
+- User holds `f` and taps `3`.
+- key_listener.KeyListener.run() → _handle_fan_tune() triggers when `f` is detected.
+- fan_controller.FanController.handle_tune_input():
+  - Debounce, scans digits 0-5, finds `3`.
+  - Builds and sends G-code: "TUNE_FAN S=3" via asyncio.run(send_gcode).
+  - Updates last_speed = 3 and params['s'] = 3.
+  - Waits for `f` release to avoid repeat sends.
+
+PHASE 2: Command Reception and Processing (klipper_extras/loop_move_x.py)
+- Klipper routes TUNE_FAN to LoopMoveX.cmd_TUNE_FAN(gcmd).
+- Parses S=3 → FAN_SPEED_PRESETS[3] = 0.6 duty.
+- Stops any active PartCoolingFanPlay cycle (if running).
+- Sets static part cooling fan speed to 60% via FanController.set_part_cooling_fan(printer, 0.6).
+- Does not affect motion loop or hotend fan.
+
+PHASE 3: Resulting System State
+- Part cooling fan: Static 60% duty, no cycling.
+- Motion loop: Unchanged (can be running or idle).
+- Hotend fan: Unchanged.
+- Subsequent actions:
+  - Another F+<n> updates static speed immediately (F+0 turns it off).
+  - PLAY_FAN later will switch from static to cycling using its U/D/S parameters.
+
+NOTES
+- Debounce: handle_tune_input waits for `f` release to prevent repeated sends.
+- Priority: TUNE_FAN overrides/halts current PLAY_FAN cycling.
+- Independence: Fan control runs asynchronously from the drip-feed motion loop, so it updates immediately without impacting motion.
+...existing code...
